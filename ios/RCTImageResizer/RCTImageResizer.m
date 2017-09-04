@@ -35,7 +35,7 @@ bool saveImage(NSString * fullPath, UIImage * image, NSString * format, float qu
 NSString * generateFilePath(NSString * ext, NSString * outputPath)
 {
     NSString* directory;
-
+    
     if ([outputPath length] == 0) {
         NSArray* paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
         directory = [paths firstObject];
@@ -50,17 +50,17 @@ NSString * generateFilePath(NSString * ext, NSString * outputPath)
             @throw [NSException exceptionWithName:@"InvalidPathException" reason:[NSString stringWithFormat:@"Error creating documents subdirectory: %@", error] userInfo:nil];
         }
     }
-
+    
     NSString* name = [[NSUUID UUID] UUIDString];
     NSString* fullName = [NSString stringWithFormat:@"%@.%@", name, ext];
     NSString* fullPath = [directory stringByAppendingPathComponent:fullName];
-
+    
     return fullPath;
 }
 
 UIImage * rotateImage(UIImage *inputImage, float rotationDegrees)
 {
-
+    
     // We want only fixed 0, 90, 180, 270 degree rotations.
     const int rotDiv90 = (int)round(rotationDegrees / 90);
     const int rotQuadrant = rotDiv90 % 4;
@@ -86,8 +86,8 @@ UIImage * rotateImage(UIImage *inputImage, float rotationDegrees)
         }
         
         return [[UIImage alloc] initWithCGImage: inputImage.CGImage
-                                                  scale: 1.0
-                                                  orientation: orientation];
+                                          scale: 1.0
+                                    orientation: orientation];
     }
 }
 
@@ -107,9 +107,85 @@ RCT_EXPORT_METHOD(createResizedImage:(NSString *)path
     if ([format isEqualToString:@"PNG"]) {
         extension = @"png";
     }
-
+    
     
     NSString* fullPath;
+    @try {
+        fullPath = generateFilePath(extension, outputPath);
+    } @catch (NSException *exception) {
+        callback(@[@"Invalid output path.", @""]);
+        return;
+    }
+    
+    [_bridge.imageLoader loadImageWithURLRequest:[RCTConvert NSURLRequest:path] callback:^(NSError *error, UIImage *image) {
+        if (error || image == nil) {
+            if ([path hasPrefix:@"data:"] || [path hasPrefix:@"file:"]) {
+                NSURL *imageUrl = [[NSURL alloc] initWithString:path];
+                image = [UIImage imageWithData:[NSData dataWithContentsOfURL:imageUrl]];
+            } else {
+                image = [[UIImage alloc] initWithContentsOfFile:path];
+            }
+            if (image == nil) {
+                callback(@[@"Can't retrieve the file from the path.", @""]);
+                return;
+            }
+        }
+        
+        // Rotate image if rotation is specified.
+        if (0 != (int)rotation) {
+            image = rotateImage(image, rotation);
+            if (image == nil) {
+                callback(@[@"Can't rotate the image.", @""]);
+                return;
+            }
+        }
+        
+        // Do the resizing
+        UIImage *scaledImage = [image scaleToSize:newSize];
+        if (scaledImage == nil) {
+            callback(@[@"Can't resize the image.", @""]);
+            return;
+        }
+        
+        // Compress and save the image
+        if (!saveImage(fullPath, scaledImage, format, quality)) {
+            callback(@[@"Can't save the image. Check your compression format and your output path", @""]);
+            return;
+        }
+        NSURL *fileUrl = [[NSURL alloc] initFileURLWithPath:fullPath];
+        NSString *fileName = fileUrl.lastPathComponent;
+        NSError *attributesError = nil;
+        NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:fullPath error:&attributesError];
+        NSNumber *fileSize = fileAttributes == nil ? 0 : [fileAttributes objectForKey:NSFileSize];
+        NSDictionary *response = @{@"path": fullPath,
+                                   @"uri": fileUrl.absoluteString,
+                                   @"name": fileName,
+                                   @"size": fileSize == nil ? @(0) : fileSize
+                                   };
+        
+        callback(@[[NSNull null], response]);
+    }];
+}
+
+RCT_EXPORT_METHOD(createSmallerImage:(NSString *)path
+                  minWidth:(float)minWidth
+                  minHeight:(float)minHeight
+                  maxWidth:(float)maxWidth
+                  maxHeight:(float)maxHeight
+                  format:(NSString *)format
+                  quality:(float)quality
+                  rotation:(float)rotation
+                  outputPath:(NSString *)outputPath
+                  callback:(RCTResponseSenderBlock)callback)
+{
+    //Set image extension
+    NSString *extension = @"jpg";
+    if ([format isEqualToString:@"PNG"]) {
+        extension = @"png";
+    }
+
+
+    NSString *fullPath;
     @try {
         fullPath = generateFilePath(extension, outputPath);
     } @catch (NSException *exception) {
@@ -129,7 +205,12 @@ RCT_EXPORT_METHOD(createResizedImage:(NSString *)path
                 callback(@[@"Can't retrieve the file from the path.", @""]);
                 return;
             }
+
+
         }
+
+        NSLog(@"width: %f px", image.size.width * image.scale);
+        NSLog(@"height: %f px", image.size.height * image.scale);
 
         // Rotate image if rotation is specified.
         if (0 != (int)rotation) {
@@ -140,8 +221,59 @@ RCT_EXPORT_METHOD(createResizedImage:(NSString *)path
             }
         }
 
+        float heightInPoints = image.size.height;
+        float widthInPoints = image.size.width;
+
+        float height = heightInPoints * image.scale; //in pixels
+        float width = widthInPoints * image.scale; //in pixels
+
+        float newWidth = maxWidth;
+        float newHeight = maxHeight;
+        //if width or height are larger than minWidth or minHeight we should resize the image to fit the size
+        if ((width > minWidth || height > minHeight)) {
+
+            if (width > maxWidth && height > maxHeight) {
+                if (width > height) {
+                    newWidth = maxWidth;
+                    newHeight = minHeight;
+                } else {
+                    newWidth = minWidth;
+                    newHeight = maxHeight;
+                }
+            } else if (width > maxWidth) {
+                newWidth = maxWidth;
+                newHeight = minHeight;
+            } else if (height > maxHeight) {
+                newWidth = minWidth;
+                newHeight = maxHeight;
+            } else {
+                newWidth = minWidth;
+                newHeight = minHeight;
+            }
+        } else {
+            NSLog(@"RCTImageREsizer - Image resolution is lower the the minimums required");
+            //            newSize = CGSizeMake(width, height);
+
+            NSURL *fileUrl = [[NSURL alloc] initFileURLWithPath:path];
+            NSString *fileName = fileUrl.lastPathComponent;
+            NSError *attributesError = nil;
+            NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:&attributesError];
+            NSNumber *fileSize = fileAttributes == nil ? 0 : [fileAttributes objectForKey:NSFileSize];
+            NSDictionary *response = @{@"path": path,
+                                       @"uri": fileUrl.absoluteString,
+                                       @"name": fileName,
+                                       @"size": fileSize == nil ? @(0) : fileSize
+                                       };
+
+            callback(@[[NSNull null], response]);
+            return;
+        }
+
+        NSLog(@"RCTImageREsizer - resize required");
+        CGSize newSize = CGSizeMake(newWidth, newHeight);
+
         // Do the resizing
-        UIImage * scaledImage = [image scaleToSize:newSize];
+        UIImage *scaledImage = [image scaleToSize:newSize];
         if (scaledImage == nil) {
             callback(@[@"Can't resize the image.", @""]);
             return;
@@ -152,6 +284,7 @@ RCT_EXPORT_METHOD(createResizedImage:(NSString *)path
             callback(@[@"Can't save the image. Check your compression format and your output path", @""]);
             return;
         }
+
         NSURL *fileUrl = [[NSURL alloc] initFileURLWithPath:fullPath];
         NSString *fileName = fileUrl.lastPathComponent;
         NSError *attributesError = nil;
@@ -162,7 +295,7 @@ RCT_EXPORT_METHOD(createResizedImage:(NSString *)path
                                    @"name": fileName,
                                    @"size": fileSize == nil ? @(0) : fileSize
                                    };
-        
+
         callback(@[[NSNull null], response]);
     }];
 }

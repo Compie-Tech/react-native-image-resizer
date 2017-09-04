@@ -51,6 +51,8 @@ class ImageResizer {
         return newImage;
     }
 
+
+
     /**
      * Rotate the specified bitmap with the given angle, in degrees.
      */
@@ -275,6 +277,100 @@ class ImageResizer {
 
         // Scale it first so there are fewer pixels to transform in the rotation
         Bitmap scaledImage = ImageResizer.resizeImage(sourceImage, newWidth, newHeight);
+        if (sourceImage != scaledImage) {
+            sourceImage.recycle();
+        }
+
+        // Rotate if necessary
+        Bitmap rotatedImage = scaledImage;
+        int orientation = getOrientation(context, imageUri);
+        rotation = orientation + rotation;
+        rotatedImage = ImageResizer.rotateImage(scaledImage, rotation);
+
+        if (scaledImage != rotatedImage) {
+            scaledImage.recycle();
+        }
+
+        // Save the resulting image
+        File path = context.getCacheDir();
+        if (outputPath != null) {
+            path = new File(outputPath);
+        }
+
+        File newFile = ImageResizer.saveImage(rotatedImage, path,
+                Long.toString(new Date().getTime()), compressFormat, quality);
+
+        // Clean up remaining image
+        rotatedImage.recycle();
+
+        return newFile;
+    }
+
+    private static Bitmap shrinkImage(Bitmap image, int minWidth, int minHeight, int maxWidth, int maxHeight) {
+        Bitmap newImage = null;
+        if (image == null) {
+            return null; // Can't load the image from the given path.
+        }
+
+        if (maxHeight > 0 && minHeight > 0 && maxWidth > 0 && minWidth > 0) {
+            float width = image.getWidth();
+            float height = image.getHeight();
+
+            //if width or height are larger than minWidth or minHeight we should resize the image to fit the size
+            if ((width > minWidth || height > minHeight)) {
+                float newWidth = maxWidth;
+                float newHeight = maxHeight;
+                if (width > maxWidth && height > maxHeight) {
+                    if (width > height) {
+                        newWidth = maxWidth;
+                        newHeight = minHeight;
+                    } else {
+                        newWidth = minWidth;
+                        newHeight = maxHeight;
+                    }
+                } else if (width > maxWidth) {
+                    newWidth = maxWidth;
+                    newHeight = minHeight;
+                } else if (height > maxHeight) {
+                    newWidth = minWidth;
+                    newHeight = maxHeight;
+                } else {
+                    newWidth = minWidth;
+                    newHeight = minHeight;
+                }
+
+                float ratio = Math.min((float)newWidth / width, (float)newHeight / height);
+
+                int finalWidth = (int) (width * ratio);
+                int finalHeight = (int) (height * ratio);
+                newImage = Bitmap.createScaledBitmap(image, finalWidth, finalHeight, true);
+            } else {
+                // if Image width or height were not larger than maxWidth or maxHeight return the original image
+                return image;
+            }
+        }
+        return newImage;
+    }
+
+    public static File createSmallerImage(Context context, Uri imageUri,
+                                          int minWidth, int minHeight,
+                                          int maxWidth, int maxHeight,
+                                          Bitmap.CompressFormat compressFormat,
+                                          int quality, int rotation, String outputPath) throws IOException  {
+        Bitmap sourceImage = null;
+        String imageUriScheme = imageUri.getScheme();
+        if (imageUriScheme == null || imageUriScheme.equalsIgnoreCase(SCHEME_FILE) || imageUriScheme.equalsIgnoreCase(SCHEME_CONTENT)) {
+            sourceImage = ImageResizer.loadBitmapFromFile(context, imageUri, maxWidth, maxHeight);
+        } else if (imageUriScheme.equalsIgnoreCase(SCHEME_DATA)) {
+            sourceImage = ImageResizer.loadBitmapFromBase64(imageUri);
+        }
+
+        if (sourceImage == null) {
+            throw new IOException("Unable to load source image from path");
+        }
+
+        // Scale it first so there are fewer pixels to transform in the rotation
+        Bitmap scaledImage = ImageResizer.shrinkImage(sourceImage, minWidth, minHeight, maxWidth, maxHeight);
         if (sourceImage != scaledImage) {
             sourceImage.recycle();
         }
